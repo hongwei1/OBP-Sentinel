@@ -191,10 +191,20 @@ class Config:
 
     build_actions_url: str  # the OBP-API build on GitHub Actions, shown at the top of the page (build.py)
 
+    loki_url: str  # "" except for an instance whose logs are read from Loki (OBP Bank Node)
+    loki_tenant: str  # sent as X-Scope-OrgID
+    loki_selector: str  # which streams: a Loki stream selector such as {namespace="bank-node"}
+
     @property
     def is_app(self) -> bool:
-        """An app with its own /monitoring endpoints rather than OBP-API: no metrics, root, Scopes or source review."""
-        return bool(self.monitoring_path)
+        """Not OBP-API: an app with its own /monitoring endpoints, or an instance read from Loki. No metrics, root, Scopes
+        or source review."""
+        return bool(self.monitoring_path) or bool(self.loki_url)
+
+    @property
+    def is_loki(self) -> bool:
+        """An instance whose warnings and errors are read from Loki: it serves no log cache, Telemetry or token check."""
+        return bool(self.loki_url)
 
     @property
     def env_prefix(self) -> str:
@@ -205,7 +215,8 @@ class Config:
     def all_from_env(cls) -> list["Config"]:
         """Every instance: each OBP-API instance, its app directory read again, followed by its apps."""
         for name in _obp_instance_names():
-            discover_apps(cls.from_env(name))
+            if not cls.from_env(name).is_loki:
+                discover_apps(cls.from_env(name))
         return [cls.from_env(name) for name in instance_names()]
 
     @classmethod
@@ -221,16 +232,19 @@ class Config:
             if not named:
                 return os.environ.get(key, default)
             for i, prefix in enumerate(prefixes + [""]):
-                if i > 0 and (key in OWN_PER_INSTANCE or (is_app and key in OBP_API_ONLY)):
+                if i > 0 and (key in OWN_PER_INSTANCE or ((is_app or is_loki) and key in OBP_API_ONLY)):
                     break
                 if (value := os.environ.get(prefix + key)) is not None:
                     return value
             return default
 
         monitoring_path = APPS[app].monitoring_path if is_app else ""
+        # Its own setting only: a plain LOKI_URL must not turn every OBP-API instance into a Loki one
+        loki_url = os.environ.get(_prefix(name) + "LOKI_URL", "").rstrip("/") if not is_app else ""
+        is_loki = bool(loki_url)
         return cls(
             name=name,
-            obp_base_url=(_app_urls(parent)[app] if is_app
+            obp_base_url=(loki_url if is_loki else _app_urls(parent)[app] if is_app
                           else env("OBP_BASE_URL", "http://localhost:8080")).rstrip("/"),
             monitoring_path=monitoring_path,
             parent=parent,
@@ -241,8 +255,10 @@ class Config:
             telemetry_api_version=env("OBP_TELEMETRY_API_VERSION", "v7.0.0"),
             aggregate_metrics_api_version=env("OBP_AGGREGATE_METRICS_API_VERSION", "v6.0.0"),
             root_api_version=env("OBP_ROOT_API_VERSION", "v5.1.0"),
-            obp_api_source=os.environ.get(APPS[app].source_setting, "") if is_app else env("OBP_API_SOURCE", ""),
-            obp_api_github_repo=APPS[app].github_repo if is_app else env("OBP_API_GITHUB_REPO", "OpenBankProject/OBP-API"),
+            obp_api_source=("" if is_loki else os.environ.get(APPS[app].source_setting, "") if is_app
+                            else env("OBP_API_SOURCE", "")),
+            obp_api_github_repo=("" if is_loki else APPS[app].github_repo if is_app
+                                 else env("OBP_API_GITHUB_REPO", "OpenBankProject/OBP-API")),
             db_path=env("SENTINEL_DB", f"sentinel-{name}.db" if named else "sentinel.db"),
             source_db_path=env("SENTINEL_SOURCE_DB", "sentinel-source.db"),
             review_dir=env("SENTINEL_REVIEW_DIR", "source-review"),
@@ -257,7 +273,7 @@ class Config:
                     "" if monitoring_path else "obp.api.,hikaricp.connections,jvm.memory.used,jvm.gc.pause")
             ),
             ignore_regex=env("SENTINEL_IGNORE_REGEX",
-                             "monitoring/" if monitoring_path else
+                             "" if is_loki else "monitoring/" if monitoring_path else
                              "system/log-cache|management/telemetry|management/aggregate-metrics|consumers/current/platform-app"),
             retention_days=int(env("SENTINEL_RETENTION_DAYS", "14")),
             min_watch_hours=float(env("SENTINEL_MIN_WATCH_HOURS", "4")),
@@ -267,7 +283,9 @@ class Config:
             snooze_days=int(env("SENTINEL_SNOOZE_DAYS", "7")),
             ui_host=env("SENTINEL_UI_HOST", "127.0.0.1"),
             ui_port=int(env("SENTINEL_UI_PORT", "8765")),
-            analyse_minutes=int(env("SENTINEL_ANALYSE_MINUTES", "60")),
+            # The analyst reads OBP-API's source: off for a Loki instance unless its own setting turns it on
+            analyse_minutes=int(os.environ.get(_prefix(name) + "SENTINEL_ANALYSE_MINUTES", "0") if is_loki
+                                else env("SENTINEL_ANALYSE_MINUTES", "60")),
             analyse_min_watch_hours=float(env("SENTINEL_ANALYSE_MIN_WATCH_HOURS", "2")),
             analyse_budget_usd=float(env("SENTINEL_ANALYSE_BUDGET_USD", "2")),
             analyse_timeout_minutes=int(env("SENTINEL_ANALYSE_TIMEOUT_MINUTES", "30")),
@@ -277,5 +295,8 @@ class Config:
             scan_endpoints=int(env("SENTINEL_SCAN_ENDPOINTS", "2")),
             fix_worktree=env("SENTINEL_FIX_WORKTREE", ""),
             fix_budget_usd=float(env("SENTINEL_FIX_BUDGET_USD", "3")),
-            build_actions_url="" if is_app else env("OBP_API_BUILD_ACTIONS_URL", ""),
+            build_actions_url="" if is_app or is_loki else env("OBP_API_BUILD_ACTIONS_URL", ""),
+            loki_url=loki_url,
+            loki_tenant=os.environ.get(_prefix(name) + "LOKI_TENANT", "1") if is_loki else "",
+            loki_selector=os.environ.get(_prefix(name) + "LOKI_SELECTOR", "") if is_loki else "",
         )

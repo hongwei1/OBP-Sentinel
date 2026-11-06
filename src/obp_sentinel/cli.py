@@ -16,6 +16,7 @@ from .scanner import Scanner
 from .config import Config, ConfigError
 from .digest import NotReady, write_digest
 from .logs import for_instance, setup as setup_logging
+from .loki_client import LokiClient
 from .obp_client import OBPClient
 from .source import TIERS, Reviews, export_reviews, mark_of, next_endpoints, open_reviews
 from .store import VERDICTS, Store, now
@@ -39,13 +40,18 @@ def stop(analysts: dict[str, Analyst]) -> None:
         analyst.stop()
 
 
+def collector_for(config: Config, store: Store) -> Collector:
+    loki = LokiClient(config.loki_url, config.loki_tenant, config.loki_selector) if config.is_loki else None
+    return Collector(config, store, OBPClient(config), loki)
+
+
 def collect(config: Config) -> None:
     """Poll one instance forever. Runs in its own thread, with its own database connection."""
     store = Store(config.db_path)
     try:
         while True:
             try:
-                Collector(config, store, OBPClient(config)).run_forever()
+                collector_for(config, store).run_forever()
             except Exception:
                 logger.exception("Collector failed; starting again in %ss", config.poll_seconds)
                 time.sleep(config.poll_seconds)
@@ -68,7 +74,7 @@ def cmd_collect(args, configs: list[Config]) -> None:
             for_instance(threading.current_thread(), config.obp_base_url)
             store = Store(config.db_path)
             try:
-                Collector(config, store, OBPClient(config)).poll_once()
+                collector_for(config, store).poll_once()
             finally:
                 store.close()
         return

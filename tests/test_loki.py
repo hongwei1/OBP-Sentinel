@@ -92,3 +92,42 @@ def test_a_failed_poll_is_recorded_and_keeps_the_place(tmp_path):
     assert c.poll_loki() == "loki failed"
     assert store.get_state(LOKI_SINCE, None) == 42
     assert [tuple(r) for r in store.db.execute("SELECT source, ok FROM polls")] == [("loki", 0)]
+
+
+def test_an_instance_with_its_own_loki_url_reads_logs_from_loki(config, monkeypatch, app_directories):
+    monkeypatch.setenv("SENTINEL_INSTANCES", "local-k3s,bank-node")
+    monkeypatch.setenv("LOCAL_K3S_OBP_BASE_URL", "https://api.obp.local:18443")
+    monkeypatch.setenv("BANK_NODE_LOKI_URL", "http://localhost:13100/")
+    monkeypatch.setenv("BANK_NODE_LOKI_SELECTOR", '{namespace="bank-node"}')
+    monkeypatch.setenv("BANK_NODE_OBP_BASE_URL", "https://not-used")
+    app_directories["https://api.obp.local:18443"] = {}  # the app directory is read for OBP-API only: Loki has none
+    configs = {c.name: c for c in Config.all_from_env()}
+    assert list(configs) == ["local-k3s", "bank-node"]
+    node = configs["bank-node"]
+    assert node.is_loki and node.is_app
+    assert (node.loki_url, node.loki_tenant, node.loki_selector) == ("http://localhost:13100", "1", '{namespace="bank-node"}')
+    assert node.obp_base_url == "http://localhost:13100" and node.monitoring_path == "" and node.parent == ""
+    assert node.analyse_minutes == 0 and node.ignore_regex == "" and node.obp_api_source == ""
+    assert node.db_path == "sentinel-bank-node.db"
+    assert not configs["local-k3s"].is_loki and not configs["local-k3s"].is_app
+
+
+def test_a_plain_loki_url_does_not_turn_an_obp_api_instance_into_a_loki_one(config, monkeypatch, app_directories):
+    monkeypatch.setenv("SENTINEL_INSTANCES", "local")
+    monkeypatch.setenv("LOKI_URL", "http://localhost:13100")
+    app_directories["http://localhost:8080"] = {}
+    assert not Config.from_env("local").is_loki
+
+
+def test_poll_once_on_a_loki_instance_reads_only_loki(config, monkeypatch, app_directories, tmp_path):
+    from obp_sentinel.cli import collector_for
+
+    monkeypatch.setenv("SENTINEL_INSTANCES", "bank-node")
+    monkeypatch.setenv("BANK_NODE_LOKI_URL", "http://loki.test")
+    node = Config.all_from_env()[0]
+    store = Store(str(tmp_path / "n.db"))
+    collector = collector_for(node, store)
+    collector.loki = loki([[("node-a", {"detected_level": "warn"}, [(1_000_000_000_000, NODE_WARN)])]])
+    collector.client = None  # no OBP-API, no OIDC: a Loki poll must not touch it
+    collector.poll_once()
+    assert [tuple(r) for r in store.db.execute("SELECT source, ok, new FROM polls")] == [("loki", 1, 1)]

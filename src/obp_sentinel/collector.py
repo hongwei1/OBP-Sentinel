@@ -242,7 +242,9 @@ class Collector:
         return f"endpoints {verdict} without a token"
 
     def poll_once(self) -> None:
-        if self.config.is_app:  # only the log cache and Telemetry: Scopes are declared by watching OBP-API itself
+        if self.config.is_loki:  # only warnings and errors from Loki: no token, Telemetry or Scopes
+            results = [self.poll_loki()]
+        elif self.config.is_app:  # only the log cache and Telemetry: Scopes are declared by watching OBP-API itself
             results = [self.poll_logs(level) for level in self.config.log_levels] + [self.poll_telemetry()]
             results.append(self.check_secured())
         else:
