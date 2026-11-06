@@ -11,6 +11,7 @@ import re
 import time
 
 from .config import Config
+from .loki_client import LokiClient
 from .obp_client import OBPClient
 from .signatures import parse_line, signature_of
 from .source import fetch_reach, reach_is_due
@@ -29,6 +30,9 @@ METRICS_MAX_BUCKETS_PER_POLL = 8
 # How often to check that the endpoints Sentinel reads refuse a call with no token
 SECURED_CHECK_SECONDS = 3600
 SECURED = "endpoints_secured"
+# Loki: the newest line read so far (ns); the first poll looks back this far
+LOKI_SINCE = "loki_since_ns"
+LOKI_BACKFILL_SECONDS = 24 * 3600
 
 
 def new_entries(current: list[str], previous_head: list[str]) -> tuple[list[str], bool]:
@@ -53,10 +57,11 @@ def bucket_of(ts: int, bucket_minutes: int) -> int:
 
 
 class Collector:
-    def __init__(self, config: Config, store: Store, client: OBPClient):
+    def __init__(self, config: Config, store: Store, client: OBPClient, loki: LokiClient | None = None):
         self.config = config
         self.store = store
         self.client = client
+        self.loki = loki
         self.ignore = re.compile(config.ignore_regex) if config.ignore_regex else None
         self.declared_at = 0.0
 
@@ -85,19 +90,40 @@ class Collector:
             logger.info("Declared as Platform App %r; all Scopes held", app.get("label"))
 
     def ingest(self, level: str, messages: list[str]) -> int:
-        """Count new messages (oldest first, so samples and first_seen are in order). Returns how many counted."""
+        """Count new messages, newest first as the log cache gives them. Returns how many counted."""
+        return self.ingest_lines([(level, raw) for raw in reversed(messages)])
+
+    def ingest_lines(self, lines: list[tuple[str, str]]) -> int:
+        """Count (level, message) pairs, oldest first, so samples and first_seen are in order. Returns how many counted."""
         counted = 0
         poll_ts = now()
-        for raw in reversed(messages):
+        for level, raw in lines:
             if self.ignore and self.ignore.search(raw):
                 continue
             parsed = parse_line(raw)
             ts = int(parsed.ts.timestamp()) if parsed.ts else poll_ts
             self.store.record_occurrence(
-                signature_of(level, parsed), ts, bucket_of(ts, self.config.bucket_minutes), raw
+                signature_of(level or parsed.level, parsed), ts, bucket_of(ts, self.config.bucket_minutes), raw
             )
             counted += 1
         return counted
+
+    def poll_loki(self) -> str:
+        """Read the lines Loki has of the levels counted, after the last one read. Returns a few words for the log line."""
+        source = "loki"
+        since = self.store.get_state(LOKI_SINCE, None)
+        start = since + 1 if since else (now() - LOKI_BACKFILL_SECONDS) * 10**9
+        try:
+            entries = self.loki.entries(self.config.log_levels, start, self.config.fetch_limit)
+        except Exception as e:  # keep watching: a failed poll is recorded and shows up as reduced coverage
+            logger.warning("Polling %s failed: %s", source, e)
+            self.store.record_poll(source, ok=False, error=str(e)[:500])
+            return "loki failed"
+        counted = self.ingest_lines([(e.level, e.line) for e in entries])
+        if entries:
+            self.store.set_state(LOKI_SINCE, entries[-1].ts_ns)
+        self.store.record_poll(source, ok=True, fetched=len(entries), new=counted)
+        return f"loki +{counted}"
 
     def poll_logs(self, level: str) -> str:
         """Returns a few words for the poll's log line."""
