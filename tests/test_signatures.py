@@ -54,3 +54,53 @@ def test_exception_from_detail_line():
 def test_normalise_path_keeps_literals_and_version():
     assert normalise_path("/obp/v7.0.0/management/telemetry") == "/obp/v7.0.0/management/telemetry"
     assert normalise_path("/obp/v5.1.0/users/user_id/9b2f6e2a") == "/obp/v5.1.0/users/{id}/{id}"
+
+
+# Lines as OBP Bank Node's node writes them (read from Loki, 2026-11-06)
+NODE_FINAL = ('{"timestamp":"2026-11-06T16:32:30.013267Z","level":"INFO","fields":{"message":"settlement FINAL",'
+              '"idempotency_key":"79880e67-d4eb-46b9-b058-b2101644fdfa","tx_id":"eb872a9fde2a8767862d33e77eaf05cec8534f1872bfb480fcb503cda6dd84cc",'
+              '"depth":2},"target":"obp_bank_node::finality"}')
+
+
+def node_warn(currency: str, ts="2026-11-06T16:31:27.357523Z") -> str:
+    return ('{"timestamp":"' + ts + '","level":"WARN","fields":{"message":"USD/fiat leg fell back","currency":"' + currency
+            + '","used":"er-api","failed":"pyth: transaction rejected: fx: pyth: HTTP status client error (401 Unauthorized)"},'
+            '"target":"obp_bank_node::fx"}')
+
+
+def test_parse_json_line():
+    parsed = parse_line(node_warn("KES"))
+    assert parsed.level == "warn"
+    assert parsed.logger == "obp_bank_node::fx"
+    assert parsed.thread == ""
+    assert parsed.message == "USD/fiat leg fell back"
+    assert parsed.ts.isoformat() == "2026-11-06T16:31:27.357523+00:00"
+    # the other fields are the detail, in the order the node wrote them
+    assert parsed.detail.splitlines() == [
+        "currency=KES", "used=er-api",
+        "failed=pyth: transaction rejected: fx: pyth: HTTP status client error (401 Unauthorized)"]
+
+
+def test_json_error_field_comes_first_in_detail():
+    raw = ('{"timestamp":"2026-11-06T16:49:10.154360Z","level":"WARN","fields":{"message":"routing-scheme registry refresh failed",'
+           '"attempt":3,"error":"OBP API transport error: OBP-API returned 401 Unauthorized"},"target":"obp_bank_node::routing"}')
+    assert parse_line(raw).detail.splitlines() == ["error=OBP API transport error: OBP-API returned 401 Unauthorized", "attempt=3"]
+
+
+def test_json_lines_with_different_values_are_one_signature():
+    a = parse_line(node_warn("KES"))
+    b = parse_line(node_warn("TZS", ts="2026-11-06T17:00:00.000000Z"))
+    assert signature_of(a.level, a).id == signature_of(b.level, b).id
+    assert signature_of(a.level, a).template == "USD/fiat leg fell back"
+
+
+def test_json_line_without_an_exception_class():
+    parsed = parse_line(NODE_FINAL)
+    assert signature_of(parsed.level, parsed).exception == ""
+    assert signature_of(parsed.level, parsed).level == "info"
+
+
+def test_json_that_is_not_a_tracing_line_stays_plain_text():
+    for raw in ('{"not": "a log line"}', '{"level":"INFO","fields":{"x":1}}', '{broken', '[1, 2]'):
+        parsed = parse_line(raw)
+        assert parsed.ts is None and parsed.message == raw and parsed.level == ""

@@ -7,9 +7,12 @@ in ids, numbers, amounts or quoted values belong to the same signature.
 The apps are JavaScript: the API Manager and Portal write `[timestamp] [LEVEL] [context] message`, API Explorer II
 plain messages, and an error is `TypeError: message` followed by `    at ...` stack lines. OBP-OIDC (Scala) writes
 `logger - message` or plain messages, an exception followed by its `\tat ...` stack lines.
+
+OBP Bank Node (Rust) writes one JSON object per line, with its own level (`parse_json_line`).
 """
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,9 +57,33 @@ class ParsedLine:
     logger: str
     message: str
     detail: str
+    level: str = ""  # only for lines that carry their own level (JSON); the log cache gives it by endpoint
+
+
+def parse_json_line(raw: str) -> ParsedLine | None:
+    """A Rust `tracing_subscriber` JSON line (OBP Bank Node): `{"timestamp", "level", "fields": {"message", ...}, "target"}`.
+
+    The message is the template and the other fields are the values, so nothing has to be cut out of the text. They
+    go to the detail, `error` first. There is no thread and no exception class. None when the line is not such a line."""
+    if not raw.startswith("{"):
+        return None
+    try:
+        entry = json.loads(raw)
+    except ValueError:
+        return None
+    fields = entry.get("fields") if isinstance(entry, dict) else None
+    if not isinstance(fields, dict) or not isinstance(fields.get("message"), str) or "level" not in entry:
+        return None
+    values = {k: v for k, v in fields.items() if k != "message"}
+    ordered = sorted(values, key=lambda k: k != "error")
+    detail = "\n".join(f"{k}={values[k]}" for k in ordered)
+    return ParsedLine(_parse_ts(str(entry.get("timestamp", ""))), "", str(entry.get("target", "")),
+                      fields["message"], detail, str(entry["level"]).lower())
 
 
 def parse_line(raw: str) -> ParsedLine:
+    if (parsed := parse_json_line(raw)) is not None:
+        return parsed
     match = LINE_RE.match(raw)
     if not match:
         first, _, rest = raw.partition("\n")
