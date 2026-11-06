@@ -205,6 +205,24 @@ def test_instances_show_running_commit_age_and_problems(server, config, monkeypa
     assert status == 200 and json.loads(data)["problems"][0]["key"] == "token-rejected"
 
 
+def test_a_loki_instance_is_marked_log_only(server, config, tmp_path):
+    loki = replace(config, name="bank-node", db_path=str(tmp_path / "bank-node.db"), loki_url="http://localhost:13100",
+                   obp_base_url="http://localhost:13100", monitoring_path="")
+    allowed = set()
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler([config, loki], allowed))
+    port = httpd.server_address[1]
+    allowed.add(f"127.0.0.1:{port}")
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        instances = {i["name"]: i for i in json.loads(request(port, "GET", "/api/instances")[1])}
+        assert instances["bank-node"]["log_only"] and not instances[config.name]["log_only"]
+        assert json.loads(request(port, "GET", "/api/overview?instance=bank-node")[1])["log_only"]
+        assert not json.loads(request(port, "GET", f"/api/overview?instance={config.name}")[1])["log_only"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_feedback_given_on_the_page_can_be_undone(config):
     from obp_sentinel.store import Store
     store = Store(config.db_path)

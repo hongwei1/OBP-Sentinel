@@ -28,6 +28,7 @@ TEMPLATE_MAX = 300
 
 # Order matters: the specific shapes go before the general ones.
 NORMALISERS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"<\d+\.\d+\.\d+>"), "<pid>"),  # an Erlang process id, as RabbitMQ logs them: <0.1234.0>
     (re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"), "<uuid>"),
     (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "<email>"),
     (re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?"), "<ts>"),

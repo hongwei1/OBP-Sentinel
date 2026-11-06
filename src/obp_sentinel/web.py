@@ -83,7 +83,7 @@ def running_commit(store: Store, config: Config) -> dict | None:
 def instance_status(store: Store, config: Config) -> dict:
     """For the instance tabs: which commit each runs, how old it is, and how many problems stop Sentinel."""
     return {"name": config.name, "parent": config.parent, "obp_base_url": config.obp_base_url + config.monitoring_path,
-            "commit": running_commit(store, config),
+            "log_only": config.is_loki, "commit": running_commit(store, config),
             "problems": len(health(store, config)["problems"])}
 
 
@@ -118,6 +118,7 @@ def overview(store: Store, config: Config) -> dict:
     last_poll = store.db.execute("SELECT MAX(ts) FROM polls WHERE ok = 1").fetchone()[0]
     return {
         "obp_base_url": config.obp_base_url,
+        "log_only": config.is_loki,  # warning and error lines only: no API calls, no analyst, no source review
         "window_hours": OVERVIEW_HOURS,
         "coverage": c,
         "deployment": c["deployments"][-1] if c["deployments"] else None,

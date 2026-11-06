@@ -104,3 +104,10 @@ def test_json_that_is_not_a_tracing_line_stays_plain_text():
     for raw in ('{"not": "a log line"}', '{"level":"INFO","fields":{"x":1}}', '{broken', '[1, 2]'):
         parsed = parse_line(raw)
         assert parsed.ts is None and parsed.message == raw and parsed.level == ""
+
+
+def test_erlang_process_ids_are_one_signature():
+    a = parse_line("[warning] <0.1234.0> closing AMQP connection <0.1234.0> (10.42.0.7:51234 -> 10.42.0.9:5672)")
+    b = parse_line("[warning] <0.987.0> closing AMQP connection <0.987.0> (10.42.0.8:40000 -> 10.42.0.9:5672)")
+    assert signature_of("warning", a).id == signature_of("warning", b).id
+    assert "<pid>" in signature_of("warning", a).template

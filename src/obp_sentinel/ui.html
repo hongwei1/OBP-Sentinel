@@ -388,7 +388,7 @@ nav.instances .flag { display: inline-block; width: 8px; height: 8px; border-rad
       <div class="chart" id="chart-calls"></div>
     </div>
   </section>
-  <section class="activity analysis" aria-labelledby="analysis-title">
+  <section class="activity analysis" id="analysis-section" aria-labelledby="analysis-title">
     <div class="pulse-row">
       <span class="pulse"><span class="dot" id="n-dot"></span><span id="analysis-title">Analyst</span></span>
       <span class="sub" id="n-when"></span>
@@ -409,7 +409,7 @@ nav.instances .flag { display: inline-block; width: 8px; height: 8px; border-rad
       </div>
     </div>
   </section>
-  <section class="activity analysis" aria-labelledby="source-title">
+  <section class="activity analysis" id="source-section" aria-labelledby="source-title">
     <div class="pulse-row">
       <span class="pulse"><span class="dot" id="scan-dot"></span><span id="source-title">Source review</span></span>
       <span class="sub" id="source-when"></span>
@@ -498,7 +498,7 @@ function renderHeader() {
     ['Failed polls', fmtNum(o.coverage.failed_polls), ''],
     ['API calls', fmtNum(w.calls), ` vs ${fmtNum(p.calls)} before`],
     ['Mean response', w.mean_ms == null ? '—' : `${w.mean_ms} ms`, p.mean_ms == null ? '' : ` vs ${p.mean_ms}`],
-  ];
+  ].filter((chip, i) => !(o.log_only && i >= 2));  // an instance that only has log lines has no API calls
   $('chips').replaceChildren(...chips.map(([label, value, after]) =>
     el('div', { className: 'chip' }, [el('span', { textContent: label + ' ' }), el('b', { textContent: value }),
                                       el('span', { textContent: after })])), ...securedChip(o.secured));
@@ -1018,6 +1018,7 @@ function instanceTab(i, label) {
 
 function renderInstances() {
   const open = state.instances.find((i) => i.name === state.instance);
+  $('analysis-section').hidden = $('source-section').hidden = Boolean(open && open.log_only);
   const top = open ? (open.parent || open.name) : null;
   const obps = state.instances.filter((i) => !i.parent);
   const nav = $('instances');
@@ -1037,6 +1038,12 @@ function renderInstances() {
     b.onclick = () => openInstance(i.name);
     return b;
   }));
+}
+
+// An instance read from Loki has log lines only: nothing for the analyst or the source review to work on
+function logOnly() {
+  const open = state.instances.find((i) => i.name === state.instance);
+  return open && open.log_only;
 }
 
 function openInstance(name) {
@@ -1136,7 +1143,8 @@ function renderActivityDetails() {
   renderChart($('chart-logs'), 'Log lines', a.buckets.map((b) => b.log_lines), a, 'log lines');
   const calls = a.buckets.map((b) => b.api_calls);
   const metrics = a.sources.find((s) => s.source === 'metrics');
-  renderChart($('chart-calls'), 'API calls', calls, a, 'API calls',
+  $('chart-calls').hidden = Boolean(logOnly());
+  if (!logOnly()) renderChart($('chart-calls'), 'API calls', calls, a, 'API calls',
     calls.every((v) => v == null) ? (metrics && !metrics.ok ? 'No data: aggregate metrics are failing (see above).'
                                                             : 'No data yet: buckets are fetched after they end.') : null);
 }
